@@ -2,8 +2,9 @@
 
 Startup-time installer for `WAN2.2_base_Q8_max_realism_20H20L.json`. It is
 designed for RunPod pods that use Container Disk only. The current lean profile
-downloads only the assets needed by the frame-to-frame branch, plus matching
-FP8 diffusion-model alternatives, before ComfyUI starts.
+downloads only the assets needed by the frame-to-frame branch. Q8 and shared
+assets are made ready first; matching FP8 alternatives continue downloading
+after ComfyUI starts.
 
 This repository is the mutable setup layer. It reuses the existing wrapper
 images that provide the pinned RunPod CUDA 12.8 base, SageAttention, CUDA
@@ -36,7 +37,7 @@ SETUP_SCRIPT_URL=https://raw.githubusercontent.com/Nightfall93/runpod-comfyui-wa
 
 The script derives the workflow URL from `SETUP_SCRIPT_URL`. Set
 `WAN22_WORKFLOW_URL` only when the workflow is hosted somewhere else.
-It also installs the repository's small lazy model-pair switch node. Set
+It also installs the repository's staged model-pair switch node. Set
 `WAN22_SWITCH_NODE_URL` only when that file is hosted somewhere else.
 
 Other supported environment variables:
@@ -48,6 +49,9 @@ Other supported environment variables:
 - `NTFY_TOPIC` (optional)
 - `NTFY_SERVER_URL` (optional; defaults to `https://ntfy.sh`)
 - `NTFY_TOKEN` (optional)
+- `WAN22_DOWNLOAD_JOBS` (optional; defaults to `2`, allowed range `1`-`4`)
+- `WAN22_FP8_BACKGROUND` (optional; defaults to `1`; set `0` to block startup
+  until FP8 is also ready)
 
 ## Downloaded model assets
 
@@ -68,9 +72,19 @@ LoRAs:
 - LightX2V WAN 2.2 I2V high and low
 
 The frame-to-frame branch has one **MODEL FORMAT** checkbox. Leave it off for
-the Q8 GGUF pair or turn it on for the FP8 safetensor pair. The switch is lazy:
-only the selected high- and low-noise loaders execute, so both pairs are not
-loaded into memory at the same time.
+the Q8 GGUF pair or turn it on for the FP8 safetensor pair after its background
+download reports `state=ready`. The switch owns the loaders and loads only the
+selected pair, so missing in-progress FP8 files do not prevent Q8 prompt
+validation and both formats are not loaded into memory at the same time.
+
+Background FP8 progress is available at:
+
+- `/workspace/runpod-slim/wan22-fp8-download.status`
+- `/workspace/runpod-slim/wan22-fp8-download.log`
+
+If FP8 is selected too early, the switch produces a clear error and Q8 remains
+usable. No ComfyUI restart is required after the final `.part` files are moved
+into place.
 
 The full canvas still contains other selectable branches, but their model assets
 are intentionally not downloaded by this lean profile.
@@ -93,7 +107,7 @@ Missing installations are fetched at pinned commits:
 - ComfyUI-VideoHelperSuite
 - ComfyUI-KJNodes
 - RES4LYF (`res_2s` sampler and `bong_tangent` scheduler)
-- WAN 2.2 lazy model-pair switch (installed from this repository)
+- WAN 2.2 staged model-pair switch (installed from this repository)
 
 An installation already present in the RunPod base image is preserved.
 
@@ -101,10 +115,16 @@ An installation already present in the RunPod base image is preserved.
 
 The installer performs a real CUDA tensor preflight before consuming bandwidth,
 installs missing custom nodes, probes download sizes, resumes `.part` files,
-reconnects persistently slow transfers, validates and installs the workflow,
-patches FileBrowser credentials, and returns control to the wrapper. The wrapper
-then enables SageAttention when compatible and starts the original RunPod
-services.
+and reconnects persistently slow transfers. Up to two downloads run at once by
+default. It first completes the Q8 pair, text encoder, VAE, and LoRAs, then
+validates and installs the workflow and returns control to the wrapper. The
+wrapper enables SageAttention and starts the original RunPod services while a
+supervised background worker downloads the two FP8 models concurrently.
+
+Background failure is written to the status file and sent through ntfy when it
+is configured. Partial FP8 files are preserved for the next startup. Setting
+`WAN22_FP8_BACKGROUND=0` restores blocking behavior while retaining concurrent
+downloads.
 
 Completed files are skipped on later starts while the same container filesystem
 still exists.

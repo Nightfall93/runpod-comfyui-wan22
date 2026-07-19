@@ -3,6 +3,14 @@ set -euo pipefail
 
 COMFY="/workspace/runpod-slim/ComfyUI"
 VENV="$COMFY/.venv-cu128"
+DOWNLOAD_JOBS="${WAN22_DOWNLOAD_JOBS:-2}"
+FP8_STATUS_FILE="/workspace/runpod-slim/wan22-fp8-download.status"
+FP8_LOG_FILE="/workspace/runpod-slim/wan22-fp8-download.log"
+
+if ! [[ "$DOWNLOAD_JOBS" =~ ^[1-4]$ ]]; then
+  echo "WARNING: WAN22_DOWNLOAD_JOBS must be from 1 to 4; using 2."
+  DOWNLOAD_JOBS=2
+fi
 
 echo "=== WAN 2.2 frame-to-frame setup starting ==="
 
@@ -201,22 +209,18 @@ download_file() {
         && { [ "$status_printed" -eq 0 ] || [ $((elapsed - last_status_elapsed)) -ge 10 ]; }; then
         if [[ "$expected_size" =~ ^[0-9]+$ ]] \
           && [ "$expected_size" -gt "$bytes" ] \
-          && [ "$average_speed" -gt 0 ] \
-          && [ "$UNKNOWN_REMAINING_COUNT" -eq 0 ]; then
+          && [ "$average_speed" -gt 0 ]; then
           file_remaining=$((expected_size - bytes))
-          total_remaining=$((TOTAL_REMAINING_BYTES - transferred))
-          [ "$total_remaining" -lt "$file_remaining" ] && total_remaining=$file_remaining
           file_eta=$(((file_remaining + average_speed - 1) / average_speed))
-          total_eta=$(((total_remaining + average_speed - 1) / average_speed))
-          printf 'Downloading %-5s  %s | %s/%s | current %s/s | average %s/s | ETA %s | TOTAL ETA %s\n' \
+          printf 'Downloading %-5s  %s | %s/%s | current %s/s | average %s/s | ETA %s\n' \
             "$kind" "$name" \
             "$(numfmt --to=iec-i --suffix=B "$bytes")" \
             "$(numfmt --to=iec-i --suffix=B "$expected_size")" \
             "$(numfmt --to=iec-i --suffix=B "$current_speed")" \
             "$(numfmt --to=iec-i --suffix=B "$average_speed")" \
-            "$(format_eta "$file_eta")" "$(format_eta "$total_eta")"
+            "$(format_eta "$file_eta")"
         else
-          printf 'Downloading %-5s  %s | current %s/s | average %s/s | ETA unavailable | TOTAL ETA unavailable\n' \
+          printf 'Downloading %-5s  %s | current %s/s | average %s/s | ETA unavailable\n' \
             "$kind" "$name" \
             "$(numfmt --to=iec-i --suffix=B "$current_speed")" \
             "$(numfmt --to=iec-i --suffix=B "$average_speed")"
@@ -288,18 +292,140 @@ download_file() {
     "RunPod download complete" "default" "white_check_mark" \
     "$kind $name finished downloading."
 
-  if [[ "$expected_size" =~ ^[0-9]+$ ]]; then
-    file_remaining=$((expected_size - initial_bytes))
-    if [ "$file_remaining" -lt 0 ]; then
-      file_remaining=0
+}
+
+download_group() {
+  local label="$1"
+  shift
+  local -a indices=("$@")
+  local index next=0 active=0 failures=0 pid
+  local started finished elapsed initial_bytes=0 final_bytes=0 transferred average_speed
+  local path part_size name
+
+  [ "${#indices[@]}" -gt 0 ] || return 0
+  echo "Starting $label downloads with up to $DOWNLOAD_JOBS concurrent transfers."
+  started=$(date +%s)
+
+  for index in "${indices[@]}"; do
+    path="${DOWNLOAD_OUTPUTS[$index]}"
+    if [ -s "$path" ]; then
+      initial_bytes=$((initial_bytes + $(stat -c '%s' "$path" 2>/dev/null || echo 0)))
+    else
+      part_size=$(stat -c '%s' "${path}.part" 2>/dev/null || echo 0)
+      initial_bytes=$((initial_bytes + part_size))
     fi
-    TOTAL_REMAINING_BYTES=$((TOTAL_REMAINING_BYTES - file_remaining))
-    if [ "$TOTAL_REMAINING_BYTES" -lt 0 ]; then
-      TOTAL_REMAINING_BYTES=0
+  done
+
+  while [ "$next" -lt "${#indices[@]}" ] || [ "$active" -gt 0 ]; do
+    while [ "$next" -lt "${#indices[@]}" ] && [ "$active" -lt "$DOWNLOAD_JOBS" ]; do
+      index="${indices[$next]}"
+      name="$(basename "${DOWNLOAD_OUTPUTS[$index]}")"
+      (
+        download_file "${DOWNLOAD_KINDS[$index]}" "${DOWNLOAD_URLS[$index]}" \
+          "${DOWNLOAD_OUTPUTS[$index]}" "${DOWNLOAD_SIZES[$index]}"
+      ) 2>&1 | sed -u "s/^/[$label][$name] /" &
+      pid=$!
+      echo "[$label] Started $name (worker PID $pid)."
+      next=$((next + 1))
+      active=$((active + 1))
+    done
+
+    if [ "$active" -gt 0 ]; then
+      if wait -n; then
+        :
+      else
+        failures=$((failures + 1))
+      fi
+      active=$((active - 1))
     fi
-  elif [ "$UNKNOWN_REMAINING_COUNT" -gt 0 ]; then
-    UNKNOWN_REMAINING_COUNT=$((UNKNOWN_REMAINING_COUNT - 1))
+  done
+
+  finished=$(date +%s)
+  elapsed=$((finished - started))
+  [ "$elapsed" -lt 1 ] && elapsed=1
+  for index in "${indices[@]}"; do
+    final_bytes=$((final_bytes + $(stat -c '%s' "${DOWNLOAD_OUTPUTS[$index]}" 2>/dev/null || echo 0)))
+  done
+  transferred=$((final_bytes - initial_bytes))
+  [ "$transferred" -lt 0 ] && transferred=0
+  average_speed=$((transferred / elapsed))
+
+  if [ "$failures" -gt 0 ]; then
+    echo "ERROR: $label finished with $failures failed download worker(s)."
+    return 1
   fi
+
+  echo "Completed $label downloads in $(format_eta "$elapsed") at aggregate average $(numfmt --to=iec-i --suffix=B "$average_speed")/s."
+}
+
+write_fp8_status() {
+  local state="$1"
+  local detail="$2"
+  local temp="${FP8_STATUS_FILE}.tmp"
+  {
+    printf 'state=%s\n' "$state"
+    printf 'updated_at=%s\n' "$(date -Is)"
+    printf 'detail=%s\n' "$detail"
+    printf 'log=%s\n' "$FP8_LOG_FILE"
+  } >"$temp"
+  mv "$temp" "$FP8_STATUS_FILE"
+}
+
+start_fp8_downloads() {
+  local index all_ready=1 background_pid
+
+  for index in "${FP8_DOWNLOADS[@]}"; do
+    if [ ! -s "${DOWNLOAD_OUTPUTS[$index]}" ]; then
+      all_ready=0
+      break
+    fi
+  done
+
+  if [ "$all_ready" -eq 1 ]; then
+    write_fp8_status "ready" "Both FP8 diffusion models are available."
+    echo "Ready FP8 background assets (already downloaded)."
+    return 0
+  fi
+
+  if [ "${WAN22_FP8_BACKGROUND:-1}" = "0" ]; then
+    echo "WAN22_FP8_BACKGROUND=0; waiting for the FP8 pair before startup."
+    if download_group "WAN22-FP8" "${FP8_DOWNLOADS[@]}"; then
+      write_fp8_status "ready" "Both FP8 diffusion models are available."
+      return 0
+    fi
+    write_fp8_status "failed" "One or more FP8 downloads failed."
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$FP8_STATUS_FILE")"
+  : >"$FP8_LOG_FILE"
+  write_fp8_status "downloading" \
+    "FP8 downloads are running; keep MODEL FORMAT set to Q8 GGUF."
+
+  (
+    trap '' HUP
+    if download_group "WAN22-FP8-BG" "${FP8_DOWNLOADS[@]}"; then
+      write_fp8_status "ready" "Both FP8 diffusion models are available."
+      echo "FP8 background downloads are ready; MODEL FORMAT can now be switched to FP8."
+      notify_ntfy \
+        "WAN 2.2 FP8 models ready" "high" "white_check_mark" \
+        "Both WAN 2.2 FP8 diffusion models finished downloading. The MODEL FORMAT switch can now use FP8."
+      exit 0
+    fi
+
+    write_fp8_status "failed" \
+      "One or more FP8 downloads failed; partial files will resume next startup."
+    echo "ERROR: FP8 background downloads failed; Q8 remains available."
+    notify_ntfy \
+      "WAN 2.2 FP8 download failed" "urgent" "warning" \
+      "One or more FP8 background downloads failed. Q8 remains usable and partial FP8 files will resume next startup."
+    exit 1
+  ) > >(tee -a "$FP8_LOG_FILE") 2>&1 &
+  background_pid=$!
+  disown "$background_pid" 2>/dev/null || true
+  echo "FP8 pair downloading in the background (PID $background_pid)."
+  echo "FP8 status: $FP8_STATUS_FILE"
+  echo "FP8 log:    $FP8_LOG_FILE"
 }
 
 install_pinned_node() {
@@ -369,8 +495,8 @@ install_pinned_node "https://github.com/ClownsharkBatwing/RES4LYF.git" \
   "$COMFY/custom_nodes/RES4LYF" \
   "419de2d7c78f415dde9aa352a7231820ebfc17a4"
 
-# This tiny local node makes one checkbox select both the high- and low-noise
-# model loaders. Its lazy inputs ensure the inactive pair is not loaded.
+# This tiny local node makes one checkbox load the selected high- and low-noise
+# pair internally. The inactive format may therefore be absent or downloading.
 SWITCH_NODE_DIR="$COMFY/custom_nodes/ComfyUI-Wan22-Model-Pair-Switch"
 SWITCH_NODE_FILE="$SWITCH_NODE_DIR/__init__.py"
 SWITCH_NODE_PART="$SWITCH_NODE_DIR/__init__.part.py"
@@ -383,12 +509,12 @@ else
   exit 1
 fi
 
-echo "Installing/updating WAN 2.2 lazy model-pair switch..."
+echo "Installing/updating WAN 2.2 staged model-pair switch..."
 mkdir -p "$SWITCH_NODE_DIR"
 curl -fsSL --retry 5 --retry-delay 2 "$SWITCH_NODE_URL" -o "$SWITCH_NODE_PART"
 python -m py_compile "$SWITCH_NODE_PART"
 mv "$SWITCH_NODE_PART" "$SWITCH_NODE_FILE"
-echo "Installed WAN 2.2 lazy model-pair switch."
+echo "Installed WAN 2.2 staged model-pair switch."
 
 # Assets for the frame-to-frame branch only. Both Q8 GGUF and FP8 safetensor
 # I2V pairs are downloaded so either model format is available.
@@ -416,27 +542,20 @@ DOWNLOAD_OUTPUTS=(
   "$COMFY/models/loras/Wan2.2/wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors"
 )
 DOWNLOAD_SIZES=()
-TOTAL_REMAINING_BYTES=0
-UNKNOWN_REMAINING_COUNT=0
 
 for i in "${!DOWNLOAD_URLS[@]}"; do
   size=""
   if [ ! -s "${DOWNLOAD_OUTPUTS[$i]}" ]; then
     size="$(remote_size "${DOWNLOAD_URLS[$i]}")"
-    part_size=$(stat -c '%s' "${DOWNLOAD_OUTPUTS[$i]}.part" 2>/dev/null || echo 0)
-    if [[ "$size" =~ ^[0-9]+$ ]] && [ "$size" -gt "$part_size" ]; then
-      TOTAL_REMAINING_BYTES=$((TOTAL_REMAINING_BYTES + size - part_size))
-    elif ! [[ "$size" =~ ^[0-9]+$ ]]; then
-      UNKNOWN_REMAINING_COUNT=$((UNKNOWN_REMAINING_COUNT + 1))
-    fi
   fi
   DOWNLOAD_SIZES[$i]="$size"
 done
 
-for i in "${!DOWNLOAD_URLS[@]}"; do
-  download_file "${DOWNLOAD_KINDS[$i]}" "${DOWNLOAD_URLS[$i]}" \
-    "${DOWNLOAD_OUTPUTS[$i]}" "${DOWNLOAD_SIZES[$i]}"
-done
+# Q8 is the default workflow format. Download it and all shared assets before
+# ComfyUI starts. The optional FP8 pair is launched in the background below.
+FOREGROUND_DOWNLOADS=(0 1 4 5 6 7)
+FP8_DOWNLOADS=(2 3)
+download_group "WAN22-READY" "${FOREGROUND_DOWNLOADS[@]}"
 
 WORKFLOW_DIR="$COMFY/user/default/workflows"
 WORKFLOW_NAME="WAN2.2_base_Q8_max_realism_20H20L.json"
@@ -461,7 +580,7 @@ else
   echo "Installed  WORKFLOW  $WORKFLOW_NAME"
 fi
 
-echo "=== WAN 2.2 frame-to-frame setup finished ==="
+echo "=== WAN 2.2 foreground assets and workflow are ready ==="
 echo "Patching original /start.sh for custom FileBrowser credentials..."
 # This retains runtime expansion of FILEBROWSER_* and leaves JUPYTER_PASSWORD
 # to the original /start.sh; neither credential is written into this script.
@@ -503,5 +622,8 @@ if [ -n "${NTFY_TOPIC:-}" ]; then
   ) &
 fi
 
+start_fp8_downloads
+
 echo "Returning to wrapper. SageAttention bootstrap will run next."
+echo "ComfyUI will start with Q8 ready while the optional FP8 pair continues downloading."
 exit 0
