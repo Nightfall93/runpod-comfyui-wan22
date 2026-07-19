@@ -31,7 +31,7 @@ Expose these HTTP ports:
 After this repository is published, set:
 
 ```text
-SETUP_SCRIPT_URL=https://raw.githubusercontent.com/Nightfall93/<repository>/main/wan22_download_setup.sh
+SETUP_SCRIPT_URL=https://raw.githubusercontent.com/Nightfall93/runpod-comfyui-wan22/main/wan22_download_setup.sh
 ```
 
 The script derives the workflow URL from `SETUP_SCRIPT_URL`. Set
