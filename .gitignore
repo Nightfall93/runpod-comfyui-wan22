@@ -1,0 +1,4 @@
+*.part
+*.curl.log
+__pycache__/
+*.py[cod]
