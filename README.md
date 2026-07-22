@@ -6,9 +6,10 @@ downloads only the assets needed by the frame-to-frame branch. Q8 and shared
 assets are made ready first; matching FP8 alternatives continue downloading
 after ComfyUI starts.
 
-This repository is the mutable setup layer. It reuses the existing wrapper
-images that provide the pinned RunPod CUDA 12.8 base, SageAttention, CUDA
-preflight, FileBrowser, Jupyter, and the original `/start.sh` handoff.
+This repository is the mutable WAN-specific setup layer. It reuses the shared
+SCAIL/WAN wrapper images that provide the pinned RunPod CUDA 12.8 base,
+SageAttention, baked external custom nodes and Python packages, FileBrowser,
+Jupyter, and the original `/start.sh` handoff.
 
 ## RunPod template
 
@@ -94,7 +95,9 @@ Upload your own inputs after ComfyUI starts.
 
 ## Custom nodes
 
-Missing installations are fetched at pinned commits:
+Updated wrapper images bake these external installations at pinned commits.
+This setup script retains the same pinned installers as a fallback for older
+or third-party images:
 
 - ComfyUI-GGUF
 - ComfyUI-Easy-Use
