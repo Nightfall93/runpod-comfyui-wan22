@@ -82,8 +82,8 @@ class Wan22ModelPairSwitch:
 class Wan22LightXLoRAPair:
     """Apply the WAN 2.2 I2V LightX pair without dropping modulation deltas.
 
-    The 1022 LightX files contain ``*.diff_m`` tensors. LightX2V's official
-    ComfyUI-WanVideoWrapper workflow renames those keys to
+    The high-noise 1022 LightX file contains ``*.diff_m`` tensors. LightX2V's
+    official ComfyUI-WanVideoWrapper workflow renames those keys to
     ``*.modulation.diff`` before handing the state dict to ComfyUI's LoRA
     patcher. Generic LoRA nodes do not perform that WAN-specific conversion,
     which leaves one modulation delta unloaded for every transformer block.
@@ -155,11 +155,6 @@ class Wan22LightXLoRAPair:
                 )
             normalized[normalized_key] = value
 
-        if renamed == 0:
-            raise ValueError(
-                "The selected file contains no LightX .diff_m tensors; refusing "
-                "to silently apply an unexpected LoRA through this specialized node."
-            )
         return normalized, renamed
 
     def _load_lora(self, relative_name):
@@ -172,10 +167,16 @@ class Wan22LightXLoRAPair:
         raw_state = comfy.utils.load_torch_file(path, safe_load=True)
         normalized, renamed = self._normalize_lightx_keys(raw_state)
         self._lora_cache[path] = (modified_ns, normalized)
-        print(
-            f"[WAN 2.2 LightX] normalized {renamed} .diff_m modulation "
-            f"tensors in {os.path.basename(path)}"
-        )
+        if renamed:
+            print(
+                f"[WAN 2.2 LightX] normalized {renamed} .diff_m modulation "
+                f"tensors in {os.path.basename(path)}"
+            )
+        else:
+            print(
+                "[WAN 2.2 LightX] no .diff_m normalization needed for "
+                f"{os.path.basename(path)}"
+            )
         return normalized
 
     def _apply_lora(self, model, relative_name, strength):

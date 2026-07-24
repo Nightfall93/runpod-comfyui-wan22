@@ -82,8 +82,8 @@ validation and both formats are not loaded into memory at the same time.
 
 The adjacent **LIGHTX 4-STEP - FULL KEY SUPPORT** node controls the two 1022
 acceleration LoRAs together. Its WAN-specific loader performs the same
-`.diff_m` to `.modulation.diff` normalization as LightX2V's official
-WanVideoWrapper workflow before calling ComfyUI's patcher. This prevents the
+`.diff_m` to `.modulation.diff` normalization wherever needed as LightX2V's
+official WanVideoWrapper workflow before calling ComfyUI's patcher. This prevents the
 per-block modulation tensors from being reported and ignored as unloaded LoRA
 keys. The node is off by default and exposes separate high- and low-noise
 strengths for controlled comparisons.
