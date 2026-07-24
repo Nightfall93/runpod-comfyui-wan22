@@ -38,7 +38,7 @@ SETUP_SCRIPT_URL=https://raw.githubusercontent.com/Nightfall93/runpod-comfyui-wa
 
 The script derives the workflow URL from `SETUP_SCRIPT_URL`. Set
 `WAN22_WORKFLOW_URL` only when the workflow is hosted somewhere else.
-It also installs the repository's staged model-pair switch node. Set
+It also installs the repository's model-pair switch and LightX loader nodes. Set
 `WAN22_SWITCH_NODE_URL` only when that file is hosted somewhere else.
 
 Other supported environment variables:
@@ -53,6 +53,8 @@ Other supported environment variables:
 - `WAN22_DOWNLOAD_JOBS` (optional; defaults to `2`, allowed range `1`-`4`)
 - `WAN22_FP8_BACKGROUND` (optional; defaults to `1`; set `0` to block startup
   until FP8 is also ready)
+- `WAN22_REFRESH_WORKFLOW` (optional; set `1` to replace the installed workflow
+  with the repository copy on that startup)
 
 ## Downloaded model assets
 
@@ -77,6 +79,19 @@ the Q8 GGUF pair or turn it on for the FP8 safetensor pair after its background
 download reports `state=ready`. The switch owns the loaders and loads only the
 selected pair, so missing in-progress FP8 files do not prevent Q8 prompt
 validation and both formats are not loaded into memory at the same time.
+
+The adjacent **LIGHTX 4-STEP - FULL KEY SUPPORT** node controls the two 1022
+acceleration LoRAs together. Its WAN-specific loader performs the same
+`.diff_m` to `.modulation.diff` normalization as LightX2V's official
+WanVideoWrapper workflow before calling ComfyUI's patcher. This prevents the
+per-block modulation tensors from being reported and ignored as unloaded LoRA
+keys. The node is off by default and exposes separate high- and low-noise
+strengths for controlled comparisons.
+
+On startup, an untouched copy of the previously published workflow is upgraded
+to this corrected graph automatically. A workflow edited in ComfyUI is
+preserved; set `WAN22_REFRESH_WORKFLOW=1` for one startup if you intentionally
+want to replace your customized copy.
 
 Background FP8 progress is available at:
 
@@ -110,7 +125,8 @@ or third-party images:
 - ComfyUI-VideoHelperSuite
 - ComfyUI-KJNodes
 - RES4LYF (`res_2s` sampler and `bong_tangent` scheduler)
-- WAN 2.2 staged model-pair switch (installed from this repository)
+- WAN 2.2 model-pair switch and full-key LightX loader (installed from this
+  repository)
 
 An installation already present in the RunPod base image is preserved.
 

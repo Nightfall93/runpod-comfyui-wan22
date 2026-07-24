@@ -495,8 +495,9 @@ install_pinned_node "https://github.com/ClownsharkBatwing/RES4LYF.git" \
   "$COMFY/custom_nodes/RES4LYF" \
   "419de2d7c78f415dde9aa352a7231820ebfc17a4"
 
-# This tiny local node makes one checkbox load the selected high- and low-noise
-# pair internally. The inactive format may therefore be absent or downloading.
+# These tiny local nodes load the selected high/low model pair internally and
+# normalize WAN-specific LightX modulation keys. The inactive model format may
+# therefore be absent or downloading.
 SWITCH_NODE_DIR="$COMFY/custom_nodes/ComfyUI-Wan22-Model-Pair-Switch"
 SWITCH_NODE_FILE="$SWITCH_NODE_DIR/__init__.py"
 SWITCH_NODE_PART="$SWITCH_NODE_DIR/__init__.part.py"
@@ -509,12 +510,12 @@ else
   exit 1
 fi
 
-echo "Installing/updating WAN 2.2 staged model-pair switch..."
+echo "Installing/updating WAN 2.2 model-pair and LightX helpers..."
 mkdir -p "$SWITCH_NODE_DIR"
 curl -fsSL --retry 5 --retry-delay 2 "$SWITCH_NODE_URL" -o "$SWITCH_NODE_PART"
 python -m py_compile "$SWITCH_NODE_PART"
 mv "$SWITCH_NODE_PART" "$SWITCH_NODE_FILE"
-echo "Installed WAN 2.2 staged model-pair switch."
+echo "Installed WAN 2.2 model-pair and LightX helpers."
 
 # Assets for the frame-to-frame branch only. Both Q8 GGUF and FP8 safetensor
 # I2V pairs are downloaded so either model format is available.
@@ -560,6 +561,11 @@ download_group "WAN22-READY" "${FOREGROUND_DOWNLOADS[@]}"
 WORKFLOW_DIR="$COMFY/user/default/workflows"
 WORKFLOW_NAME="WAN2.2_base_Q8_max_realism_20H20L.json"
 WORKFLOW_FILE="$WORKFLOW_DIR/$WORKFLOW_NAME"
+# Exact hash of the previously published workflow. Upgrade that managed copy
+# automatically, but preserve any workflow the user has edited in ComfyUI.
+WORKFLOW_UPGRADE_SHA256=(
+  "3ff2668d0c2ddcb839cd9e62bc5eacbd4e5d046cf1e42d5c6d8b2ec37ece888f"
+)
 if [ -n "${WAN22_WORKFLOW_URL:-}" ]; then
   WORKFLOW_URL="$WAN22_WORKFLOW_URL"
 elif [ -n "${SETUP_SCRIPT_URL:-}" ]; then
@@ -569,15 +575,32 @@ else
   exit 1
 fi
 
-if [ -s "$WORKFLOW_FILE" ]; then
-  echo "Ready WORKFLOW  $WORKFLOW_NAME (already installed)"
+INSTALL_WORKFLOW=0
+if [ ! -s "$WORKFLOW_FILE" ]; then
+  INSTALL_WORKFLOW=1
+elif [ "${WAN22_REFRESH_WORKFLOW:-0}" = "1" ]; then
+  echo "Refreshing WORKFLOW  $WORKFLOW_NAME (WAN22_REFRESH_WORKFLOW=1)"
+  INSTALL_WORKFLOW=1
 else
+  CURRENT_WORKFLOW_SHA256="$(sha256sum "$WORKFLOW_FILE" | awk '{print $1}')"
+  for upgrade_sha256 in "${WORKFLOW_UPGRADE_SHA256[@]}"; do
+    if [ "$CURRENT_WORKFLOW_SHA256" = "$upgrade_sha256" ]; then
+      echo "Upgrading managed WORKFLOW  $WORKFLOW_NAME"
+      INSTALL_WORKFLOW=1
+      break
+    fi
+  done
+fi
+
+if [ "$INSTALL_WORKFLOW" = "1" ]; then
   echo "Installing WORKFLOW  $WORKFLOW_NAME"
   mkdir -p "$WORKFLOW_DIR"
   curl -fsSL --retry 5 --retry-delay 2 "$WORKFLOW_URL" -o "${WORKFLOW_FILE}.part"
   python3 -m json.tool "${WORKFLOW_FILE}.part" >/dev/null
   mv "${WORKFLOW_FILE}.part" "$WORKFLOW_FILE"
   echo "Installed  WORKFLOW  $WORKFLOW_NAME"
+else
+  echo "Ready WORKFLOW  $WORKFLOW_NAME (existing customized copy preserved)"
 fi
 
 echo "=== WAN 2.2 foreground assets and workflow are ready ==="
